@@ -2,9 +2,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
-import { SendHorizonal, Monitor, Video, VideoOff, Mic, MicOff } from "lucide-react";
+import { SendHorizonal, Video, VideoOff, Mic, MicOff } from "lucide-react";
 import { useSocket } from "@/context/SocketProvider";
-import toast from "react-hot-toast";
 
 const Chat = () => {
   const [messages, setMessages] = useState<any[]>([]);
@@ -37,10 +36,9 @@ const Chat = () => {
     }
   };
 
-  // --- TOGGLE LOGIC ---
+  // --- TOGGLE LOGIC (Audio/Video Only) ---
   const toggleCamera = () => {
     const peer = Socket.peerState;
-    // Safety check for streams
     const localStream = peer?.streams?.[0];
     if (localStream) {
       const videoTrack = localStream.getVideoTracks()[0];
@@ -60,27 +58,6 @@ const Chat = () => {
         audioTrack.enabled = !audioTrack.enabled;
         setIsMicOn(audioTrack.enabled);
       }
-    }
-  };
-
-  const handleScreenShare = async () => {
-    try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      const screenTrack = screenStream.getVideoTracks()[0];
-      const peer = Socket.peerState;
-      const localStream = peer?.streams?.[0]; 
-
-      if (peer && localStream) {
-        const videoTrack = localStream.getVideoTracks()[0];
-        if (videoTrack) {
-          peer.replaceTrack(videoTrack, screenTrack, localStream);
-          screenTrack.onended = () => {
-            peer.replaceTrack(screenTrack, videoTrack, localStream);
-          };
-        }
-      }
-    } catch (err) {
-      toast.error("Screen share cancelled");
     }
   };
 
@@ -136,7 +113,6 @@ const Chat = () => {
             {/* VIDEO AREA */}
             {remoteStream && (
               <div className="relative w-full aspect-video bg-black border-b border-primary/20 group">
-                {/* Added 'muted' and 'playsInline' to fix blank screen issue */}
                 <video 
                   playsInline 
                   ref={userVideo} 
@@ -147,16 +123,17 @@ const Chat = () => {
                 
                 {/* FLOATING CONTROLS */}
                 <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                   <Button size="icon" variant="secondary" className="h-8 w-8 rounded-full bg-black/50 text-white" onClick={toggleCamera}>
+                   <Button size="icon" variant="secondary" className="h-8 w-8 rounded-full bg-black/50 text-white hover:bg-black/70" onClick={toggleCamera}>
                     {isVidOn ? <Video size={14}/> : <VideoOff size={14} className="text-red-500"/>}
                    </Button>
-                   <Button size="icon" variant="secondary" className="h-8 w-8 rounded-full bg-black/50 text-white" onClick={toggleMic}>
+                   <Button size="icon" variant="secondary" className="h-8 w-8 rounded-full bg-black/50 text-white hover:bg-black/70" onClick={toggleMic}>
                     {isMicOn ? <Mic size={14}/> : <MicOff size={14} className="text-red-500"/>}
                    </Button>
                 </div>
               </div>
             )}
 
+            {/* Chat Header */}
             <div className="px-4 py-3 border-b border-primary/10 bg-primary/5 backdrop-blur-md">
               <h3 className="font-semibold text-sm flex items-center">
                 <span className="flex h-2 w-2 rounded-full bg-green-500 mr-2 animate-pulse"></span>
@@ -164,6 +141,7 @@ const Chat = () => {
               </h3>
             </div>
 
+            {/* Chat Messages */}
             <div className="flex-1 overflow-y-auto w-full p-4 space-y-3 custom-scrollbar">
               {messages.map((message, index) => (
                 <div key={index} className={`flex ${message.sender === "me" ? "justify-end" : "justify-start"}`}>
@@ -174,13 +152,24 @@ const Chat = () => {
               ))}
             </div>
 
+            {/* Chat Input Area */}
             <div className="p-3 bg-background/50 border-t border-primary/10">
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="icon" className="rounded-full shrink-0" onClick={handleScreenShare}>
-                  <Monitor size={18} />
+                <Input 
+                  type="text" 
+                  value={newMessage} 
+                  onChange={(e) => setNewMessage(e.target.value)} 
+                  ref={inputRef} 
+                  placeholder="Type a message..." 
+                  className="h-11 rounded-full px-4 focus-visible:ring-primary/50 transition-all duration-300" 
+                />
+                <Button 
+                  className="h-11 w-11 rounded-full p-0 flex-shrink-0 transition-all duration-300" 
+                  onClick={handleSendMessage} 
+                  ref={btnRef}
+                >
+                  <SendHorizonal size={18} className="ml-1" />
                 </Button>
-                <Input type="text" value={newMessage} onChange={(e) => setNewMessage(e.target.value)} ref={inputRef} placeholder="Type..." className="h-11 rounded-full px-4" />
-                <Button className="h-11 w-11 rounded-full p-0" onClick={handleSendMessage} ref={btnRef}><SendHorizonal size={18} /></Button>
               </div>
             </div>
           </div>
