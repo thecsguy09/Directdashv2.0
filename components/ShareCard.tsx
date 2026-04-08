@@ -47,7 +47,10 @@ const ShareCard = () => {
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (currentConnection) { e.preventDefault(); e.returnValue = ""; }
+      if (currentConnection) {
+        e.preventDefault();
+        e.returnValue = ""; 
+      }
     };
     const handlePopState = () => {
       if (currentConnection) {
@@ -81,9 +84,11 @@ const ShareCard = () => {
 
   useEffect(() => {
     media.getMediaStream();
+    
     userDetails.socket.on("connect", () => {
       userDetails.socket.emit("details", { socketId: userDetails.socket.id, uniqueId: userDetails.userId });
     });
+
     if (searchParams.get("code")) setpartnerId(String(searchParams.get("code")));
 
     userDetails.socket.on("signaling", (data: any) => {
@@ -103,18 +108,22 @@ const ShareCard = () => {
   }, []);
 
   const handlePeerData = (data: any) => {
-    if (data instanceof Uint8Array || data instanceof ArrayBuffer || data.buffer !== undefined) {
+    // ✅ SAFEST BINARY CHECK
+    if (typeof data !== "string") {
       fileTransfer.receiveChunk(data);
       return;
     }
+    
     try {
-      const parsedData = JSON.parse(data.toString());
+      const parsedData = JSON.parse(data);
       if (parsedData.type === "terminate") {
         handleTerminate(false);
       } else if (parsedData.type !== "messages") { 
         fileTransfer.receiveMeta(parsedData, peerRef.current);
       }
-    } catch (e) { console.error("Unknown data format"); }
+    } catch (e) {
+      console.error("Unknown data format");
+    }
   };
 
   const callUser = async () => {
@@ -130,8 +139,10 @@ const ShareCard = () => {
     }, 15000); 
 
     const peer = new Peer({
-      initiator: true, trickle: false, stream: currentStream,
-      channelConfig: { ordered: false, maxRetransmits: 0 }, 
+      initiator: true, 
+      trickle: false, 
+      stream: currentStream,
+      channelConfig: { ordered: false, maxRetransmits: 0 }, // ✅ Pure UDP speeds
       config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] },
     });
     
@@ -140,7 +151,9 @@ const ShareCard = () => {
 
     peer.on("stream", media.attachRemoteStream);
     peer.on("data", handlePeerData);
-    peer.on("signal", (data) => userDetails.socket.emit("send-signal", { from: userDetails.userId, signalData: data, to: partnerId }));
+    peer.on("signal", (data) => {
+      userDetails.socket.emit("send-signal", { from: userDetails.userId, signalData: data, to: partnerId });
+    });
 
     userDetails.socket.off("callAccepted"); 
     userDetails.socket.on("callAccepted", (data: any) => {
@@ -155,8 +168,12 @@ const ShareCard = () => {
 
     peer.on("close", () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      setpartnerId(""); setcurrentConnection(false); setterminateCall(false); setisLoading(false);
-      userDetails.setpeerState(undefined); media.stopMediaStream(); 
+      setpartnerId("");
+      setcurrentConnection(false);
+      setterminateCall(false);
+      setisLoading(false);
+      userDetails.setpeerState(undefined);
+      media.stopMediaStream(); 
       toast.error("Connection terminated");
     });
   };
@@ -166,8 +183,10 @@ const ShareCard = () => {
     if (!currentStream) return;
 
     const peer = new Peer({ 
-      initiator: false, trickle: false, stream: currentStream,
-      channelConfig: { ordered: false, maxRetransmits: 0 }
+      initiator: false, 
+      trickle: false, 
+      stream: currentStream,
+      channelConfig: { ordered: false, maxRetransmits: 0 } // ✅ Pure UDP speeds
     });
     
     peerRef.current = peer;
@@ -178,14 +197,19 @@ const ShareCard = () => {
     peer.on("data", handlePeerData);
     peer.on("signal", (data) => {
       userDetails.socket.emit("accept-signal", { signalData: data, to: partnerId });
-      setcurrentConnection(true); setacceptCaller(false); setterminateCall(true);
+      setcurrentConnection(true);
+      setacceptCaller(false);
+      setterminateCall(true);
       toast.success(`Connected to ${partnerId}`);
     });
 
     peer.signal(signalingData.signalData);
     peer.on("close", () => {
-      setpartnerId(""); setcurrentConnection(false); setterminateCall(false);
-      media.stopMediaStream(); userDetails.setpeerState(undefined);
+      setpartnerId("");
+      setcurrentConnection(false);
+      setterminateCall(false);
+      media.stopMediaStream();
+      userDetails.setpeerState(undefined);
     });
   };
 
@@ -200,12 +224,13 @@ const ShareCard = () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     setisLoading(false);
     if (peerRef.current) peerRef.current.destroy();
+    toast.error("Cancelled");
   };
 
   return (
     <Card className="w-full lg:w-[450px] backdrop-blur-xl bg-card/60 border-primary/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)] relative overflow-hidden transition-all duration-300">
       
-      {/* DRAGGABLE VIDEO PIP */}
+      {/* --- DRAGGABLE VIDEO UI --- */}
       <div ref={constraintsRef} className="relative aspect-video bg-black/95 border-b border-primary/10 overflow-hidden group">
         <video ref={media.remoteVideoRef} autoPlay playsInline controls={false} className="w-full h-full object-cover" />
         
@@ -231,7 +256,6 @@ const ShareCard = () => {
         <form onSubmit={(e) => { e.preventDefault(); handleConnectionMaking(); }}>
           <div className="grid w-full items-center gap-6">
             
-            {/* ID SECTIONS */}
             <div className="flex flex-col gap-y-2 group">
               <Label className="text-muted-foreground">My ID</Label>
               <div className="flex flex-row space-x-2">
@@ -255,7 +279,6 @@ const ShareCard = () => {
               </div>
             </div>
 
-            {/* STATUS & TERMINATE */}
             <div className="flex flex-col gap-y-2">
               <div className={`flex items-center border rounded-lg px-4 h-11 w-full transition-all ${currentConnection ? 'border-green-500/40 bg-green-500/10 text-green-500' : 'bg-muted/30 text-muted-foreground'}`}>
                 <div className={`h-2 w-2 rounded-full mr-2 ${currentConnection ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground'}`} />
@@ -266,7 +289,6 @@ const ShareCard = () => {
               </div>
             </div>
 
-            {/* FILE TRANSFER UI */}
             <div className="flex flex-col border border-primary/10 bg-primary/5 rounded-xl p-4 gap-y-3">
               <Label className="font-semibold text-foreground">Transfer Files</Label>
               <FileUploadBtn inputRef={fileInputRef} uploadBtn={() => fileInputRef.current.click()} handleFileChange={(e: any) => setfileUpload(e.target.files)} />
