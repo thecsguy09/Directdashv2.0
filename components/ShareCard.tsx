@@ -134,45 +134,43 @@ const ShareCard = () => {
     };
   }, []);
 
-  // ✅ THE DATA TYPE SPLIT
-  // This perfectly routes Strings to JSON and Arrays to Binary without collisions
+// ✅ THE AIRTIGHT DATA ROUTER
   const handleIncomingData = (data: any) => {
-    // 1. Is it purely Binary? Send straight to the Web Worker for assembly
-    if (data instanceof ArrayBuffer || data instanceof Uint8Array || Buffer.isBuffer(data)) {
+    try {
+      // 1. Extract the text (handles Native Strings, ArrayBuffers, and Webpack Buffers safely)
+      let text = "";
+      if (typeof data === "string") {
+        text = data;
+      } else if (data instanceof ArrayBuffer || data instanceof Uint8Array || data.buffer !== undefined) {
+        text = new TextDecoder().decode(data);
+      } else {
+        text = data.toString();
+      }
+
+      // 2. The Filter: If it parses, it is definitively JSON (Chat or Metadata)
+      const parsedData = JSON.parse(text);
+
+      if (parsedData.type === "messages") {
+        return; // Leave it alone! Chat.tsx handles this seamlessly.
+      }
+      if (parsedData.type === "terminate") { 
+        handleTerminate(false); 
+        return; 
+      }
+      if (parsedData.info) {
+        setfileReceiving(true);
+        workerRef.current?.postMessage({ status: "fileInfo", fileSize: parsedData.fileSize });
+        setfileNameState(parsedData.fileName);
+      } else if (parsedData.done) {
+        workerRef.current?.postMessage("download");
+        toast.success("File received");
+      }
+
+    } catch (e) {
+      // 3. The Catch: If JSON.parse FAILS, the data is definitively a raw binary file chunk.
       setfileReceiving(true);
       setdownloadFile("active");
-      
-      const buffer = data instanceof Uint8Array ? data : new Uint8Array(data);
-      workerRef.current?.postMessage({ chunk: buffer }, [buffer.buffer]);
-      return;
-    }
-
-    // 2. Is it a String? Parse it as JSON Metadata
-    if (typeof data === "string") {
-      try {
-        const parsedData = JSON.parse(data);
-        
-        // Let Chat.tsx handle chat messages
-        if (parsedData.type === "messages") return; 
-        
-        if (parsedData.type === "terminate") { 
-          handleTerminate(false); 
-        } 
-        else if (parsedData.info) { 
-          setfileReceiving(true);
-          workerRef.current?.postMessage({ 
-            status: "fileInfo", 
-            totalChunks: parsedData.totalChunks, 
-            fileType: parsedData.fileType 
-          });
-          setfileNameState(parsedData.fileName);
-        } 
-        else if (parsedData.check_missing) {
-          workerRef.current?.postMessage("check_missing");
-        }
-      } catch (e) {
-        console.error("Failed to parse string data", e);
-      }
+      workerRef.current?.postMessage(data);
     }
   };
 
