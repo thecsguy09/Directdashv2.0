@@ -80,10 +80,9 @@ export const useFileTransfer = () => {
     setfileSending(true);
     setfileUploadProgress(0);
 
-    // Cryptographically secure 32-bit ID
     currentTransferIdRef.current = window.crypto.getRandomValues(new Uint32Array(1))[0];
-
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    
     peer.write(JSON.stringify({ 
       type: "info", 
       transferId: currentTransferIdRef.current,
@@ -97,25 +96,24 @@ export const useFileTransfer = () => {
     const reader = stream.getReader();
     
     let chunkId = 0;
-    let inFlight = 0;
-    const MAX_IN_FLIGHT = 5;
-    let pumping = false; 
+    let pumping = false;
 
+    // ✅ FIXED: Sequential awaiting prevents the "Stream Locked" crash
     const pump = async () => {
       if (pumping || cancelRef.current) return;
       pumping = true;
 
-      while (inFlight < MAX_IN_FLIGHT) {
-        if (cancelRef.current) break;
+      try {
+        while (!cancelRef.current) {
+          const { done, value } = await reader.read();
 
-        inFlight++;
-        reader.read().then(({ done, value }) => {
-          inFlight--;
-          if (cancelRef.current) return;
-
-          if (done) {
-            if (inFlight === 0) peer.write(JSON.stringify({ type: "check_missing" }));
-            return;
+          if (done || cancelRef.current) {
+            if (!cancelRef.current) {
+               peer.write(JSON.stringify({ type: "check_missing" }));
+            } else {
+               reader.cancel(); // ✅ FIXED: Release OS file lock
+            }
+            break;
           }
 
           const payload = new Uint8Array(8 + value.byteLength);
@@ -124,22 +122,26 @@ export const useFileTransfer = () => {
           view.setUint32(4, chunkId, true);
           payload.set(value, 8);
 
-          const canContinue = peer.write(payload);
           chunkId++;
           setfileUploadProgress(Math.floor((chunkId / totalChunks) * 100));
 
-          if (canContinue) pump();
-          else peer.once("drain", pump);
-        });
+          const canContinue = peer.write(payload);
+          if (!canContinue) {
+            peer.once("drain", pump);
+            pumping = false;
+            return; // Wait for buffer to drain
+          }
+        }
+      } catch (err) {
+        console.error("Stream read error:", err);
       }
-      pumping = false; 
+      pumping = false;
     };
     pump();
   };
 
   const handleRetries = async (missingIds: number[]) => {
     if (cancelRef.current) return;
-    
     const file = outgoingFileRef.current;
     const peer = activePeerRef.current;
     if (!file || !peer) return;
@@ -162,7 +164,6 @@ export const useFileTransfer = () => {
 
         const start = id * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, file.size);
-        
         const sliceBuffer = await file.slice(start, end).arrayBuffer();
         const rawChunk = new Uint8Array(sliceBuffer);
 
@@ -173,9 +174,7 @@ export const useFileTransfer = () => {
         payload.set(rawChunk, 8);
 
         const canContinue = peer.write(payload);
-        if (!canContinue) {
-          await new Promise(resolve => peer.once("drain", resolve));
-        }
+        if (!canContinue) await new Promise(resolve => peer.once("drain", resolve));
       }
       await new Promise(resolve => setTimeout(resolve, 5)); 
     }
@@ -228,9 +227,9 @@ export const useFileTransfer = () => {
     if (!fileReceiving) setfileReceiving(true);
     resetWatchdog(); 
     
-    // Safely extract buffer for web worker transfer
-    const buffer = data instanceof Uint8Array ? data.buffer : data;
-    workerRef.current?.postMessage({ type: "chunk", chunk: data }, [buffer]);
+    // ✅ FIXED: Creates a clean Uint8Array to prevent shared-memory pool DataCloneErrors
+    const safeData = new Uint8Array(data);
+    workerRef.current?.postMessage({ type: "chunk", chunk: safeData }, [safeData.buffer]);
   };
 
   const resetDownload = () => setdownloadFile(null);
