@@ -45,6 +45,7 @@ const ShareCard = () => {
   const [audioActive, setAudioActive] = useState(true);
 
   const workerRef = useRef<Worker>();
+  const isDisconnecting = useRef(false);
 
   // Sync Stream with Local Video Ref
   useEffect(() => {
@@ -96,8 +97,24 @@ const ShareCard = () => {
     }
   };
 
+  // --- LOOP-GUARDED TERMINATION HANDLER ---
+  const handleTerminate = (shouldSendSignal = true) => {
+    if (isDisconnecting.current) return; 
+    isDisconnecting.current = true;
+
+    if (peerRef.current) {
+      if (shouldSendSignal) {
+        try {
+          peerRef.current.send(JSON.stringify({ type: "terminate" }));
+        } catch (e) {
+          console.log("Peer already disconnected or data channel not open");
+        }
+      }
+      peerRef.current.destroy();
+    }
+  };
+
   useEffect(() => {
-    // Attempting early fetch (safe as we check again on button click)
     getMediaStream(); 
     workerRef.current = new Worker(new URL("../utils/worker.ts", import.meta.url));
     addUserToSocketDB();
@@ -145,11 +162,12 @@ const ShareCard = () => {
       },
     });
     peerRef.current = peer;
+    isDisconnecting.current = false; 
 
     peer.on("stream", (remoteStream) => {
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = remoteStream;
-        remoteVideoRef.current.play().catch((e) => console.error("Playback failed", e));
+        remoteVideoRef.current.play().catch(() => {});
       }
     });
 
@@ -159,6 +177,10 @@ const ShareCard = () => {
 
     peer.on("data", (data) => {
       const parsedData = JSON.parse(data);
+      if (parsedData.type === "terminate") {
+        handleTerminate(false); // ✅ STOP THE PING-PONG HERE
+        return;
+      }
       if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
       else if (parsedData.done) { handleReceivingData(parsedData); toast.success("File received"); }
       else if (parsedData.info) handleReceivingData(parsedData);
@@ -173,7 +195,14 @@ const ShareCard = () => {
       userDetails.setpeerState(peer);
     });
 
-    peer.on("close", () => { setcurrentConnection(false); setterminateCall(false); userDetails.setpeerState(undefined); });
+    peer.on("close", () => { 
+      setpartnerId("");
+      setcurrentConnection(false); 
+      setterminateCall(false); 
+      setisLoading(false);
+      userDetails.setpeerState(undefined); 
+      toast.error("Connection terminated");
+    });
   };
 
   const acceptUser = async () => {
@@ -197,6 +226,7 @@ const ShareCard = () => {
     });
 
     peerRef.current = peer;
+    isDisconnecting.current = false;
     userDetails.setpeerState(peer);
 
     peer.on("stream", (remoteStream) => {
@@ -216,16 +246,28 @@ const ShareCard = () => {
 
     peer.on("data", (data) => {
       const parsedData = JSON.parse(data);
+      if (parsedData.type === "terminate") {
+        handleTerminate(false); // ✅ STOP THE PING-PONG HERE
+        return;
+      }
       if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
       else if (parsedData.done) { handleReceivingData(parsedData); toast.success("File received"); }
       else if (parsedData.info) handleReceivingData(parsedData);
     });
 
     peer.signal(signalingData.signalData);
-    peer.on("close", () => { setcurrentConnection(false); setterminateCall(false); userDetails.setpeerState(undefined); });
+    peer.on("close", () => { 
+      setpartnerId("");
+      setcurrentConnection(false); 
+      setterminateCall(false); 
+      setisLoading(false);
+      userDetails.setpeerState(undefined); 
+      toast.error("Connection terminated");
+    });
   };
 
   const handleConnectionMaking = () => {
+    if (currentConnection) return;
     setisLoading(true);
     if (partnerId && partnerId.length === 10) callUser();
     else { setisLoading(false); toast.error("Invalid Peer ID"); }
@@ -279,28 +321,12 @@ const ShareCard = () => {
       
       {/* --- VIDEO UI --- */}
       <div className="relative aspect-video bg-black/95 border-b border-primary/10 overflow-hidden group">
-        {/* Remote Video: No controls, AutoPlay, PlaysInline for Safari compatibility */}
-        <video 
-          ref={remoteVideoRef} 
-          autoPlay 
-          playsInline 
-          controls={false}
-          className="w-full h-full object-cover" 
-        />
+        <video ref={remoteVideoRef} autoPlay playsInline controls={false} className="w-full h-full object-cover" />
         
-        {/* Local PIP: Muted always */}
         <div className="absolute bottom-3 right-3 w-32 aspect-video bg-card rounded-lg overflow-hidden border border-primary/40 shadow-xl z-20">
-          <video 
-            ref={localVideoRef} 
-            autoPlay 
-            playsInline 
-            muted 
-            controls={false}
-            className="w-full h-full object-cover scale-x-[-1]" 
-          />
+          <video ref={localVideoRef} autoPlay playsInline muted controls={false} className="w-full h-full object-cover scale-x-[-1]" />
         </div>
 
-        {/* Media Controls Overlay */}
         <div className="absolute bottom-3 left-3 flex gap-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
           <Button size="icon" variant="secondary" type="button" className="rounded-full h-9 w-9 bg-background/80" onClick={toggleVideo}>
             {videoActive ? <Video size={16} /> : <VideoOff size={16} className="text-destructive" />}
@@ -341,7 +367,7 @@ const ShareCard = () => {
               <div className={`flex items-center border rounded-lg px-4 h-11 w-full transition-all ${currentConnection ? 'border-green-500/40 bg-green-500/10 text-green-500' : 'bg-muted/30 text-muted-foreground'}`}>
                 <div className={`h-2 w-2 rounded-full mr-2 ${currentConnection ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground'}`} />
                 {currentConnection ? `Connected` : "Ready to connect"}
-                {terminateCall && <Button variant="destructive" size="sm" className="ml-auto h-7 px-2" onClick={() => peerRef.current.destroy()}>
+                {terminateCall && <Button variant="destructive" size="sm" className="ml-auto h-7 px-2" onClick={() => handleTerminate(true)}>
                     <PhoneOff size={14} className="mr-1" /> Terminate
                 </Button>}
               </div>
