@@ -18,7 +18,8 @@ import FileDownload from "./FileDownload";
 import ShareLink from "./ShareLink";
 import { useSearchParams } from "next/navigation";
 import { useMediaStream } from "../utils/mediaHelper"; 
-import { motion } from "framer-motion"; // ✅ Draggable Logic
+import { motion } from "framer-motion";
+import { sendFileFast } from "../utils/fastSender"; // ✅ Our high-speed binary helper
 
 const ShareCard = () => {
   const userDetails = useSocket();
@@ -45,9 +46,8 @@ const ShareCard = () => {
   const workerRef = useRef<Worker>();
   const isDisconnecting = useRef(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const constraintsRef = useRef(null); // ✅ For dynamic drag constraints
+  const constraintsRef = useRef(null); 
 
-  // --- NAVIGATION PROTECTION ---
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (currentConnection) {
@@ -73,7 +73,6 @@ const ShareCard = () => {
     };
   }, [currentConnection]);
 
-  // --- TERMINATION HANDLER (Handshake Logic) ---
   const handleTerminate = (shouldSendSignal = true) => {
     if (isDisconnecting.current) return;
     isDisconnecting.current = true;
@@ -124,6 +123,34 @@ const ShareCard = () => {
     };
   }, []);
 
+  // ✅ SAFELY ROUTE INCOMING DATA
+  const handleIncomingData = (data: any) => {
+    // 1. Is it pure binary? Send directly to worker.
+    if (data instanceof ArrayBuffer || data instanceof Uint8Array || data.buffer !== undefined) {
+      setfileReceiving(true);
+      setdownloadFile("active");
+      const buffer = data instanceof Uint8Array ? data.buffer : data;
+      workerRef.current?.postMessage(buffer);
+      return;
+    }
+
+    // 2. Otherwise, it is JSON
+    try {
+      const parsedData = JSON.parse(data.toString());
+      if (parsedData.type === "terminate") { handleTerminate(false); return; }
+      if (parsedData.type === "messages") return; // Chat.tsx handles this
+      
+      if (parsedData.info) { 
+        setfileReceiving(true);
+        workerRef.current?.postMessage({ status: "fileInfo", fileSize: parsedData.fileSize, chunkSize: parsedData.chunkSize });
+        setfileNameState(parsedData.fileName);
+      } else if (parsedData.done) { 
+        workerRef.current?.postMessage("download");
+        toast.success("File received"); 
+      }
+    } catch (e) { /* Ignore non-JSON safely */ }
+  };
+
   const callUser = async () => {
     const currentStream = await media.getMediaStream();
     if (!currentStream) { setisLoading(false); return; }
@@ -151,13 +178,7 @@ const ShareCard = () => {
       userDetails.socket.emit("send-signal", { from: userDetails.userId, signalData: data, to: partnerId });
     });
 
-    peer.on("data", (data) => {
-      const parsedData = JSON.parse(data);
-      if (parsedData.type === "terminate") { handleTerminate(false); return; }
-      if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
-      else if (parsedData.done) { handleReceivingData(parsedData); toast.success("File received"); }
-      else if (parsedData.info) handleReceivingData(parsedData);
-    });
+    peer.on("data", handleIncomingData); // Attached safe router
 
     userDetails.socket.off("callAccepted"); 
     userDetails.socket.on("callAccepted", (data: any) => {
@@ -201,13 +222,7 @@ const ShareCard = () => {
       toast.success(`Connected to ${partnerId}`);
     });
 
-    peer.on("data", (data) => {
-      const parsedData = JSON.parse(data);
-      if (parsedData.type === "terminate") { handleTerminate(false); return; }
-      if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
-      else if (parsedData.done) { handleReceivingData(parsedData); toast.success("File received"); }
-      else if (parsedData.info) handleReceivingData(parsedData);
-    });
+    peer.on("data", handleIncomingData); // Attached safe router
 
     peer.signal(signalingData.signalData);
     peer.on("close", () => {
@@ -236,69 +251,43 @@ const ShareCard = () => {
   const handleFileUploadBtn = () => { fileInputRef.current.click(); };
   const handleFileChange = (e: any) => { setfileUpload(e.target.files); };
 
-  function handleReceivingData(data: any) {
-    if (data.info) {
-      workerRef.current?.postMessage({ status: "fileInfo", fileSize: data.fileSize });
-      setfileNameState(data.fileName);
-    } else if (data.done) workerRef.current?.postMessage("download");
-    else { setdownloadFile("active"); workerRef.current?.postMessage(data); }
-  }
-
+  // ✅ FAST BINARY SEND (Delegated to external helper)
   const handleWebRTCUpload = () => {
-    const peer = peerRef.current;
-    const file = fileUpload[0];
-    const chunkSize = 16 * 1024;
-    let offset = 0;
-    const readAndSendChunk = () => {
-      const chunk = file.slice(offset, offset + chunkSize);
-      const reader = new FileReader();
-      if (offset === 0) {
-        setfileSending(true);
-        peer.write(JSON.stringify({ info: true, fileName: file.name, fileSize: file.size, fileType: file.type }));
+    if (!peerRef.current || !fileUpload || !fileUpload[0]) return;
+    
+    setfileSending(true);
+    setfileUploadProgress(0);
+
+    sendFileFast(
+      fileUpload[0],
+      peerRef.current,
+      (progress) => {
+        setfileUploadProgress(progress);
+      },
+      () => {
+        setfileUploadProgress(100);
+        setfileSending(false);
+        toast.success("File sent");
       }
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          const uint8ArrayChunk = new Uint8Array(event.target.result as ArrayBuffer);
-          peer.write(JSON.stringify({ chunk: Array.from(uint8ArrayChunk), progress: (offset / file.size) * 100 }));
-          setfileUploadProgress((offset / file.size) * 100);
-          offset += chunkSize;
-          if (offset < file.size) readAndSendChunk();
-          else {
-            peer.write(JSON.stringify({ done: true, fileName: file.name, fileSize: file.size, fileType: file.type }));
-            setfileUploadProgress(100); setfileSending(false); toast.success("File sent");
-          }
-        }
-      };
-      reader.readAsArrayBuffer(chunk);
-    };
-    readAndSendChunk();
+    );
   };
 
   return (
     <Card className="w-full lg:w-[450px] backdrop-blur-xl bg-card/60 border-primary/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)] relative overflow-hidden transition-all duration-300">
       
-      {/* --- DRAGGABLE VIDEO UI --- */}
       <div ref={constraintsRef} className="relative aspect-video bg-black/95 border-b border-primary/10 overflow-hidden group">
         <video ref={media.remoteVideoRef} autoPlay playsInline controls={false} className="w-full h-full object-cover" />
         
-        {/* Local Draggable PIP with persistent layout */}
         <motion.div 
           drag
           dragConstraints={constraintsRef}
           dragElastic={0.1}
           dragMomentum={false}
           whileDrag={{ scale: 1.05, zIndex: 50 }}
-          layout // ✅ Prevents position resetting during state changes
+          layout 
           className="absolute bottom-3 right-3 w-32 aspect-video bg-card rounded-lg overflow-hidden border border-primary/40 shadow-xl z-20 cursor-grab active:cursor-grabbing touch-none"
         >
-          <video 
-            ref={media.localVideoRef} 
-            autoPlay 
-            playsInline 
-            muted 
-            controls={false}
-            className="w-full h-full object-cover scale-x-[-1] pointer-events-none" 
-          />
+          <video ref={media.localVideoRef} autoPlay playsInline muted controls={false} className="w-full h-full object-cover scale-x-[-1] pointer-events-none" />
         </motion.div>
 
         <div className="absolute bottom-3 left-3 flex gap-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
