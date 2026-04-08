@@ -1,4 +1,3 @@
-"use client";
 import React from "react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
@@ -9,7 +8,6 @@ type fileUploadBtn = {
   handleFileChange: any;
   uploadBtn: any;
 };
-
 const FileUploadBtn = ({
   inputRef,
   handleFileChange,
@@ -19,7 +17,7 @@ const FileUploadBtn = ({
     <>
       <Input
         type="file"
-        className="hidden"
+        style={{ display: "none" }}
         ref={inputRef}
         onChange={(e) => handleFileChange(e)}
       />
@@ -27,7 +25,7 @@ const FileUploadBtn = ({
         variant="outline"
         type="button"
         onClick={uploadBtn}
-        className="flex gap-x-2 border-dashed border-2 hover:bg-primary/5 transition-colors"
+        className=" flex gap-x-2"
       >
         <File size={15} />
         Select File

@@ -1,8 +1,7 @@
-"use client";
 import React from "react";
 import { Label } from "./ui/label";
 import { Button } from "./ui/button";
-import { Download, X } from "lucide-react";
+import { Download } from "lucide-react";
 import { saveAs } from "file-saver";
 import { Progress } from "./ui/progress";
 import { truncateString } from "@/utils/funtions";
@@ -12,7 +11,6 @@ type fileDownloadProps = {
   fileName: string;
   fileProgress: number;
   fileRawData: any;
-  cancelTransfer?: any; // ✅ Added to support receiver cancellation
 };
 
 const FileDownload = ({
@@ -20,55 +18,37 @@ const FileDownload = ({
   fileProgress,
   fileReceivingStatus,
   fileRawData,
-  cancelTransfer,
 }: fileDownloadProps) => {
-  
   const handleFileDownload = (fileRawData: any, tempFile: any) => {
     const blob = fileRawData;
     saveAs(blob, tempFile);
   };
-
   return (
     <>
-      <div className="flex flex-col border border-primary/20 bg-primary/5 rounded-xl px-4 py-4 w-full gap-y-3 shadow-sm">
-        <div className="flex justify-between items-center">
-          <Label className="font-semibold text-[16px] flex items-center">
-            {fileReceivingStatus ? (
-              <span className="flex h-2 w-2 rounded-full bg-blue-500 mr-2 animate-pulse"></span>
-            ) : null}
-            Download
-          </Label>
-          
-          {/* ✅ Receiver Cancel Button */}
-          {fileReceivingStatus && cancelTransfer && (
-            <Button size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground hover:text-destructive" onClick={cancelTransfer}>
-              <X size={14} className="mr-1" /> Cancel
-            </Button>
-          )}
+      <div className="flex flex-col border rounded-lg  px-3 py-3 w-full gap-y-2">
+        <div>
+          <Label className=" font-semibold text-[16px]">Download</Label>
         </div>
-
-        <div className="flex flex-col border border-primary/10 bg-background rounded-lg px-3 py-3 text-sm w-full gap-y-2">
+        <div className="flex flex-col border rounded-lg  px-3 py-3 text-sm w-full gap-y-2">
           <div className="flex justify-between items-center">
-            <div className="flex font-medium">
+            <div className="flex">
               {fileReceivingStatus ? "Receiving..." : truncateString(fileName)}
             </div>
             <div className="flex">
               <Button
                 type="button"
                 variant="outline"
-                className="h-[30px] px-3"
-                disabled={!fileRawData}
+                className="h-[30px] px-2"
                 onClick={() => handleFileDownload(fileRawData, fileName)}
               >
-                <Download size={14} className="mr-1" /> Save
+                <Download size={15} />
               </Button>
             </div>
           </div>
 
           {fileReceivingStatus ? (
-            <div className="mt-1">
-              {/* Changed color slightly to distinguish receiving from sending */}
-              <Progress value={fileProgress} className="h-1.5 [&>div]:bg-blue-500" />
+            <div>
+              <Progress value={fileProgress} className="h-1" />
             </div>
           ) : null}
         </div>
