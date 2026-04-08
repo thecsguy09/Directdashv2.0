@@ -19,14 +19,13 @@ import ShareLink from "./ShareLink";
 import { useSearchParams } from "next/navigation";
 import { useMediaStream } from "../utils/mediaHelper"; 
 import { motion } from "framer-motion";
-import { sendFileFast } from "../utils/fastSender"; // ✅ Our high-speed binary helper
+import { sendFileFast } from "../utils/fastSender"; // ✅ External Binary Helper
 
 const ShareCard = () => {
   const userDetails = useSocket();
   const media = useMediaStream(); 
   const [partnerId, setpartnerId] = useState("");
   const [isLoading, setisLoading] = useState(false);
-  const [isCopied, setisCopied] = useState(false);
   const [currentConnection, setcurrentConnection] = useState(false);
   const peerRef = useRef<any>();
   const [userId, setuserId] = useState<any>();
@@ -105,11 +104,23 @@ const ShareCard = () => {
     });
 
     workerRef.current?.addEventListener("message", (event: any) => {
-      if (event.data?.progress) setfileDownloadProgress(Number(event.data.progress));
+      if (event.data?.progress) {
+        setfileDownloadProgress(Number(event.data.progress));
+      } 
       else if (event.data?.blob) {
-        setdownloadFile(event.data?.blob);
+        setdownloadFile(event.data.blob);
         setfileDownloadProgress(0);
         setfileReceiving(false);
+        // Alert Sender that transfer is complete via Metadata
+        peerRef.current?.send(JSON.stringify({ transfer_complete: true }));
+        toast.success("File received with 100% integrity!");
+      }
+      else if (event.data?.request_retries) {
+        // Worker found missing chunks, send NACK to Sender
+        peerRef.current?.send(JSON.stringify({ 
+          request_retries: true, 
+          missingIds: event.data.missingIds 
+        }));
       }
     });
 
@@ -123,32 +134,46 @@ const ShareCard = () => {
     };
   }, []);
 
-  // ✅ SAFELY ROUTE INCOMING DATA
+  // ✅ THE DATA TYPE SPLIT
+  // This perfectly routes Strings to JSON and Arrays to Binary without collisions
   const handleIncomingData = (data: any) => {
-    // 1. Is it pure binary? Send directly to worker.
-    if (data instanceof ArrayBuffer || data instanceof Uint8Array || data.buffer !== undefined) {
+    // 1. Is it purely Binary? Send straight to the Web Worker for assembly
+    if (data instanceof ArrayBuffer || data instanceof Uint8Array || Buffer.isBuffer(data)) {
       setfileReceiving(true);
       setdownloadFile("active");
-      const buffer = data instanceof Uint8Array ? data.buffer : data;
-      workerRef.current?.postMessage(buffer);
+      
+      const buffer = data instanceof Uint8Array ? data : new Uint8Array(data);
+      workerRef.current?.postMessage({ chunk: buffer }, [buffer.buffer]);
       return;
     }
 
-    // 2. Otherwise, it is JSON
-    try {
-      const parsedData = JSON.parse(data.toString());
-      if (parsedData.type === "terminate") { handleTerminate(false); return; }
-      if (parsedData.type === "messages") return; // Chat.tsx handles this
-      
-      if (parsedData.info) { 
-        setfileReceiving(true);
-        workerRef.current?.postMessage({ status: "fileInfo", fileSize: parsedData.fileSize, chunkSize: parsedData.chunkSize });
-        setfileNameState(parsedData.fileName);
-      } else if (parsedData.done) { 
-        workerRef.current?.postMessage("download");
-        toast.success("File received"); 
+    // 2. Is it a String? Parse it as JSON Metadata
+    if (typeof data === "string") {
+      try {
+        const parsedData = JSON.parse(data);
+        
+        // Let Chat.tsx handle chat messages
+        if (parsedData.type === "messages") return; 
+        
+        if (parsedData.type === "terminate") { 
+          handleTerminate(false); 
+        } 
+        else if (parsedData.info) { 
+          setfileReceiving(true);
+          workerRef.current?.postMessage({ 
+            status: "fileInfo", 
+            totalChunks: parsedData.totalChunks, 
+            fileType: parsedData.fileType 
+          });
+          setfileNameState(parsedData.fileName);
+        } 
+        else if (parsedData.check_missing) {
+          workerRef.current?.postMessage("check_missing");
+        }
+      } catch (e) {
+        console.error("Failed to parse string data", e);
       }
-    } catch (e) { /* Ignore non-JSON safely */ }
+    }
   };
 
   const callUser = async () => {
@@ -167,6 +192,7 @@ const ShareCard = () => {
       initiator: true,
       trickle: false,
       stream: currentStream,
+      channelConfig: { ordered: false, maxRetransmits: 0 }, // Unleash UDP speeds
       config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] },
     });
     peerRef.current = peer;
@@ -178,7 +204,7 @@ const ShareCard = () => {
       userDetails.socket.emit("send-signal", { from: userDetails.userId, signalData: data, to: partnerId });
     });
 
-    peer.on("data", handleIncomingData); // Attached safe router
+    peer.on("data", handleIncomingData); // Attached the split router
 
     userDetails.socket.off("callAccepted"); 
     userDetails.socket.on("callAccepted", (data: any) => {
@@ -207,7 +233,13 @@ const ShareCard = () => {
     const currentStream = await media.getMediaStream();
     if (!currentStream) return;
 
-    const peer = new Peer({ initiator: false, trickle: false, stream: currentStream });
+    const peer = new Peer({ 
+      initiator: false, 
+      trickle: false, 
+      stream: currentStream,
+      channelConfig: { ordered: false, maxRetransmits: 0 }
+    });
+    
     peerRef.current = peer;
     isDisconnecting.current = false;
     userDetails.setpeerState(peer);
@@ -222,7 +254,7 @@ const ShareCard = () => {
       toast.success(`Connected to ${partnerId}`);
     });
 
-    peer.on("data", handleIncomingData); // Attached safe router
+    peer.on("data", handleIncomingData); // Attached the split router
 
     peer.signal(signalingData.signalData);
     peer.on("close", () => {
@@ -251,7 +283,7 @@ const ShareCard = () => {
   const handleFileUploadBtn = () => { fileInputRef.current.click(); };
   const handleFileChange = (e: any) => { setfileUpload(e.target.files); };
 
-  // ✅ FAST BINARY SEND (Delegated to external helper)
+  // ✅ Call the Helper
   const handleWebRTCUpload = () => {
     if (!peerRef.current || !fileUpload || !fileUpload[0]) return;
     
@@ -267,7 +299,6 @@ const ShareCard = () => {
       () => {
         setfileUploadProgress(100);
         setfileSending(false);
-        toast.success("File sent");
       }
     );
   };
