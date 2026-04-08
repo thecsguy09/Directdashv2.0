@@ -14,11 +14,12 @@ import FileUploadBtn from "./FileUploadBtn";
 import FileDownload from "./FileDownload";
 import ShareLink from "./ShareLink";
 import { useSearchParams } from "next/navigation";
-import { useMediaStream } from "../utils/mediaHelper"; // ✅ Custom Hook
+import { useMediaStream } from "../utils/mediaHelper"; 
+import { motion } from "framer-motion"; // ✅ Draggable Logic
 
 const ShareCard = () => {
   const userDetails = useSocket();
-  const media = useMediaStream(); // ✅ Media Layer
+  const media = useMediaStream(); 
   const [partnerId, setpartnerId] = useState("");
   const [isLoading, setisLoading] = useState(false);
   const [isCopied, setisCopied] = useState(false);
@@ -40,6 +41,34 @@ const ShareCard = () => {
 
   const workerRef = useRef<Worker>();
   const isDisconnecting = useRef(false);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const constraintsRef = useRef(null); // ✅ For dynamic drag constraints
+
+  // --- NAVIGATION PROTECTION ---
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (currentConnection) {
+        e.preventDefault();
+        e.returnValue = ""; 
+      }
+    };
+    const handlePopState = () => {
+      if (currentConnection) {
+        const confirmLeave = window.confirm("Leave call and break connection?");
+        if (!confirmLeave) window.history.pushState(null, "", window.location.pathname);
+        else handleTerminate(true);
+      }
+    };
+    if (currentConnection) {
+      window.addEventListener("beforeunload", handleBeforeUnload);
+      window.history.pushState(null, "", window.location.pathname);
+      window.addEventListener("popstate", handlePopState);
+    }
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [currentConnection]);
 
   // --- TERMINATION HANDLER (Handshake Logic) ---
   const handleTerminate = (shouldSendSignal = true) => {
@@ -47,27 +76,22 @@ const ShareCard = () => {
     isDisconnecting.current = true;
 
     if (peerRef.current) {
-      if (shouldSendSignal) {
+      if (shouldSendSignal && peerRef.current?.connected) {
         try {
           peerRef.current.send(JSON.stringify({ type: "terminate" }));
-        } catch (e) {
-          console.log("Peer already disconnected");
-        }
+        } catch (e) { console.log(e); }
       }
       peerRef.current.destroy();
     }
   };
 
   useEffect(() => {
-    media.getMediaStream(); // Pre-warm camera
+    media.getMediaStream();
     workerRef.current = new Worker(new URL("../utils/worker.ts", import.meta.url));
     
     userDetails.socket.on("connect", () => {
       setuserId(userDetails.userId);
-      userDetails.socket.emit("details", {
-        socketId: userDetails.socket.id,
-        uniqueId: userDetails.userId,
-      });
+      userDetails.socket.emit("details", { socketId: userDetails.socket.id, uniqueId: userDetails.userId });
     });
 
     if (searchParams.get("code")) setpartnerId(String(searchParams.get("code")));
@@ -88,9 +112,12 @@ const ShareCard = () => {
     });
 
     return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
       peerRef.current?.destroy();
       media.stopMediaStream();
       workerRef.current?.terminate();
+      userDetails.socket.off("callAccepted");
+      userDetails.socket.off("signaling");
     };
   }, []);
 
@@ -98,28 +125,24 @@ const ShareCard = () => {
     const currentStream = await media.getMediaStream();
     if (!currentStream) { setisLoading(false); return; }
 
+    timeoutRef.current = setTimeout(() => {
+      if (!currentConnection) {
+        setisLoading(false);
+        toast.error("Request timed out");
+        if (peerRef.current) peerRef.current.destroy();
+      }
+    }, 15000); 
+
     const peer = new Peer({
       initiator: true,
       trickle: false,
       stream: currentStream,
-      config: {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          {
-            urls: "turn:free.expressturn.com:3478",
-            username: "0000000002090581751",
-            credential: "RQWvdnxlvgWaUOexD0JKsEmgi8c=",
-          },
-        ],
-      },
+      config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] },
     });
     peerRef.current = peer;
     isDisconnecting.current = false;
 
-    // ✅ Use Hook's safe attachment helper
-    peer.on("stream", (remoteStream) => {
-      media.attachRemoteStream(remoteStream);
-    });
+    peer.on("stream", (remoteStream) => { media.attachRemoteStream(remoteStream); });
 
     peer.on("signal", (data) => {
       userDetails.socket.emit("send-signal", { from: userDetails.userId, signalData: data, to: partnerId });
@@ -127,16 +150,15 @@ const ShareCard = () => {
 
     peer.on("data", (data) => {
       const parsedData = JSON.parse(data);
-      if (parsedData.type === "terminate") {
-        handleTerminate(false); // ✅ Fix: Stop loop
-        return;
-      }
+      if (parsedData.type === "terminate") { handleTerminate(false); return; }
       if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
       else if (parsedData.done) { handleReceivingData(parsedData); toast.success("File received"); }
       else if (parsedData.info) handleReceivingData(parsedData);
     });
 
+    userDetails.socket.off("callAccepted"); 
     userDetails.socket.on("callAccepted", (data: any) => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
       peer.signal(data.signalData);
       setisLoading(false);
       setcurrentConnection(true);
@@ -146,12 +168,13 @@ const ShareCard = () => {
     });
 
     peer.on("close", () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
       setpartnerId("");
       setcurrentConnection(false);
       setterminateCall(false);
       setisLoading(false);
       userDetails.setpeerState(undefined);
-      media.stopMediaStream(); // ✅ Reset UI & Hardware
+      media.stopMediaStream(); 
       toast.error("Connection terminated");
     });
   };
@@ -160,29 +183,12 @@ const ShareCard = () => {
     const currentStream = await media.getMediaStream();
     if (!currentStream) return;
 
-    const peer = new Peer({
-      initiator: false,
-      trickle: false,
-      stream: currentStream,
-      config: {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          {
-            urls: "turn:free.expressturn.com:3478",
-            username: "0000000002090581751",
-            credential: "RQWvdnxlvgWaUOexD0JKsEmgi8c=",
-          },
-        ],
-      },
-    });
-
+    const peer = new Peer({ initiator: false, trickle: false, stream: currentStream });
     peerRef.current = peer;
     isDisconnecting.current = false;
     userDetails.setpeerState(peer);
 
-    peer.on("stream", (remoteStream) => {
-      media.attachRemoteStream(remoteStream);
-    });
+    peer.on("stream", (remoteStream) => { media.attachRemoteStream(remoteStream); });
 
     peer.on("signal", (data) => {
       userDetails.socket.emit("accept-signal", { signalData: data, to: partnerId });
@@ -194,10 +200,7 @@ const ShareCard = () => {
 
     peer.on("data", (data) => {
       const parsedData = JSON.parse(data);
-      if (parsedData.type === "terminate") {
-        handleTerminate(false);
-        return;
-      }
+      if (parsedData.type === "terminate") { handleTerminate(false); return; }
       if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
       else if (parsedData.done) { handleReceivingData(parsedData); toast.success("File received"); }
       else if (parsedData.info) handleReceivingData(parsedData);
@@ -220,6 +223,13 @@ const ShareCard = () => {
     else { setisLoading(false); toast.error("Invalid Peer ID"); }
   };
 
+  const handleCancelConnection = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    setisLoading(false);
+    if (peerRef.current) peerRef.current.destroy();
+    toast.error("Cancelled");
+  };
+
   const handleFileUploadBtn = () => { fileInputRef.current.click(); };
   const handleFileChange = (e: any) => { setfileUpload(e.target.files); };
 
@@ -236,7 +246,6 @@ const ShareCard = () => {
     const file = fileUpload[0];
     const chunkSize = 16 * 1024;
     let offset = 0;
-
     const readAndSendChunk = () => {
       const chunk = file.slice(offset, offset + chunkSize);
       const reader = new FileReader();
@@ -265,13 +274,29 @@ const ShareCard = () => {
   return (
     <Card className="w-full lg:w-[450px] backdrop-blur-xl bg-card/60 border-primary/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)] relative overflow-hidden transition-all duration-300">
       
-      {/* --- VIDEO UI (Using Hook Refs) --- */}
-      <div className="relative aspect-video bg-black/95 border-b border-primary/10 overflow-hidden group">
+      {/* --- DRAGGABLE VIDEO UI --- */}
+      <div ref={constraintsRef} className="relative aspect-video bg-black/95 border-b border-primary/10 overflow-hidden group">
         <video ref={media.remoteVideoRef} autoPlay playsInline controls={false} className="w-full h-full object-cover" />
         
-        <div className="absolute bottom-3 right-3 w-32 aspect-video bg-card rounded-lg overflow-hidden border border-primary/40 shadow-xl z-20">
-          <video ref={media.localVideoRef} autoPlay playsInline muted controls={false} className="w-full h-full object-cover scale-x-[-1]" />
-        </div>
+        {/* Local Draggable PIP with persistent layout */}
+        <motion.div 
+          drag
+          dragConstraints={constraintsRef}
+          dragElastic={0.1}
+          dragMomentum={false}
+          whileDrag={{ scale: 1.05, zIndex: 50 }}
+          layout // ✅ Prevents position resetting during state changes
+          className="absolute bottom-3 right-3 w-32 aspect-video bg-card rounded-lg overflow-hidden border border-primary/40 shadow-xl z-20 cursor-grab active:cursor-grabbing touch-none"
+        >
+          <video 
+            ref={media.localVideoRef} 
+            autoPlay 
+            playsInline 
+            muted 
+            controls={false}
+            className="w-full h-full object-cover scale-x-[-1] pointer-events-none" 
+          />
+        </motion.div>
 
         <div className="absolute bottom-3 left-3 flex gap-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
           <Button size="icon" variant="secondary" type="button" className="rounded-full h-9 w-9 bg-background/80" onClick={media.toggleVideo}>
@@ -302,9 +327,9 @@ const ShareCard = () => {
             <div className="flex flex-col gap-y-2 group">
               <Label className="text-muted-foreground">Peer's ID</Label>
               <div className="flex flex-row space-x-2">
-                <Input placeholder="Enter 10-character ID" className="h-11 font-mono" onChange={(e) => setpartnerId(e.target.value)} disabled={terminateCall} value={partnerId} />
-                <Button className="h-11 w-[120px]" type="submit" disabled={terminateCall}>
-                  {isLoading ? <TailSpin color="white" height={18} width={18} /> : <b>Connect</b>}
+                <Input placeholder="Enter 10-character ID" className="h-11 font-mono" onChange={(e) => setpartnerId(e.target.value)} disabled={terminateCall || isLoading} value={partnerId} />
+                <Button className="h-11 w-[120px]" type="button" disabled={terminateCall} onClick={isLoading ? handleCancelConnection : handleConnectionMaking}>
+                  {isLoading ? <span className="flex items-center gap-1"><TailSpin color="white" height={14} width={14} /> Cancel</span> : <b>Connect</b>}
                 </Button>
               </div>
             </div>
