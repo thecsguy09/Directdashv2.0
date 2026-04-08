@@ -1,4 +1,7 @@
 "use client";
+if (typeof window !== "undefined") {
+  (window as any).global = window;
+}
 import React, { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Label } from "./ui/label";
