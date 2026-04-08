@@ -18,49 +18,57 @@ const Chat = () => {
       setMessages(newMessages);
       setNewMessage("");
 
+      // Send the message to the partner using the peer connection
       const peer = Socket.peerState;
       if (peer && peer.connected) {
-        peer.send(JSON.stringify({ type: "messages", text: newMessage, sender: "other" }));
+        const messageData = {
+          type: "messages",
+          text: newMessage,
+          sender: "other",
+        };
+        peer.send(JSON.stringify(messageData));
       }
     }
   };
 
+  // Set up event listeners for incoming messages
   useEffect(() => {
     const peer = Socket.peerState;
-    if (!peer) return;
 
-    const handleData = (data: any) => {
-      let parsedJSON = null;
+    if (peer) {
+      const handleData = (data: any) => {
+        // ✅ PURE STRING CHECK: This completely ignores the high-speed binary file chunks.
+        // It will only attempt to parse data if it arrives as a native string.
+        if (typeof data === "string") {
+          try {
+            // Parse and display the incoming message
+            const parsedJSON = JSON.parse(data);
+            if (parsedJSON && parsedJSON.type === "messages" && parsedJSON.text) {
+              setMessages((prevMessages) => [...prevMessages, parsedJSON]);
+            }
+          } catch (e) {
+            // Quietly ignore any non-chat JSON strings
+          }
+        }
+      };
 
-      // ✅ SAFE BINARY CHECK: Distinguishes between JSON Chat and Binary Files
-      if (typeof data === "string") {
-        try { parsedJSON = JSON.parse(data); } catch (e) {}
-      } else if (data[0] === 123 && data.byteLength < 5000) { 
-        try { 
-          const text = new TextDecoder().decode(data);
-          parsedJSON = JSON.parse(text); 
-        } catch (e) {}
-      }
-
-      if (parsedJSON && parsedJSON.type === "messages" && parsedJSON.text) {
-        setMessages((prevMessages) => [...prevMessages, parsedJSON]);
-      }
-    };
-
-    peer.on("data", handleData);
-    return () => {
-      peer.off("data", handleData);
-    };
+      peer.on("data", handleData);
+      
+      return () => {
+        peer.off("data", handleData);
+      };
+    }
   }, [Socket.peerState]);
 
+  // Global Keyboard Shortcuts
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         inputRef.current?.focus();
-      } else if (e.key === "Enter") {
-        btnRef.current?.click();
-      }
+      } 
+      // Note: We removed the global "Enter" listener here so it doesn't 
+      // misfire when you press Enter in the "Peer ID" input box!
     };
     document.addEventListener("keydown", down);
     return () => document.removeEventListener("keydown", down);
@@ -70,8 +78,9 @@ const Chat = () => {
     <>
       {Socket.peerState && (
         <div className="flex w-full lg:w-[400px] animate-in fade-in slide-in-from-right-8 duration-500">
-          <div className="flex flex-col border border-primary/20 rounded-xl bg-card/60 backdrop-blur-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] w-full h-[550px] overflow-hidden">
+          <div className="flex flex-col border border-primary/20 rounded-xl bg-card/60 backdrop-blur-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] dark:shadow-[0_0_40px_rgba(59,130,246,0.1)] w-full h-[550px] overflow-hidden">
             
+            {/* Chat Header */}
             <div className="px-4 py-3 border-b border-primary/10 bg-primary/5 backdrop-blur-md">
               <h3 className="font-semibold text-sm flex items-center">
                 <span className="flex h-2 w-2 rounded-full bg-green-500 mr-2 animate-pulse"></span>
@@ -79,9 +88,15 @@ const Chat = () => {
               </h3>
             </div>
 
+            {/* Chat Messages */}
             <div className="flex-1 overflow-y-auto w-full p-4 space-y-3 custom-scrollbar">
               {messages.map((message, index) => (
-                <div key={index} className={`flex ${message.sender === "me" ? "justify-end" : "justify-start"}`}>
+                <div
+                  key={index}
+                  className={`flex ${
+                    message.sender === "me" ? "justify-end" : "justify-start"
+                  }`}
+                >
                   <div
                     className={`flex flex-wrap max-w-[85%] text-sm rounded-2xl px-4 py-2.5 shadow-sm transition-all duration-200 ${
                       message.sender === "me"
@@ -95,18 +110,23 @@ const Chat = () => {
               ))}
             </div>
 
+            {/* Chat Input Area */}
             <div className="p-3 bg-background/50 backdrop-blur-md border-t border-primary/10">
               <div className="flex items-center gap-2">
                 <Input
                   type="text"
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    // ✅ FIXED: Only trigger Enter when actively typing in the chat box
+                    if (e.key === "Enter") handleSendMessage();
+                  }}
                   ref={inputRef}
                   placeholder="Type a message (Cmd+K)"
                   className="h-11 rounded-full bg-background border-primary/20 focus-visible:ring-primary/50 shadow-inner px-4 transition-all duration-300"
                 />
                 <Button
-                  className="h-11 w-11 rounded-full p-0 flex-shrink-0 bg-primary hover:bg-primary/90 text-white shadow-[0_0_15px_rgba(59,130,246,0.4)] transition-all duration-300"
+                  className="h-11 w-11 rounded-full p-0 flex-shrink-0 bg-primary hover:bg-primary/90 text-white shadow-[0_0_15px_rgba(59,130,246,0.4)] hover:shadow-[0_0_25px_rgba(59,130,246,0.6)] transition-all duration-300"
                   onClick={handleSendMessage}
                   ref={btnRef}
                 >
