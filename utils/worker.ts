@@ -1,49 +1,52 @@
-let chunks:any = [];
-let startTime:any;
-let fileSize;
-let chunkSize = 16000; // default, will be overwritten by sender
-let currentChunk = 0;
-let totalChunks:any;
-let prevProgress = 0;
+let chunks: Uint8Array[] = [];
+let totalExpectedChunks = 0;
+let receivedCount = 0;
+let fileMimeType = "application/octet-stream";
 
 self.addEventListener("message", (event) => {
-  if (event.data.status === "fileInfo") {
-    fileSize = event.data.fileSize;
-    // Dynamically get the exact chunk size from the sender to fix the math!
-    chunkSize = event.data.chunkSize || 16000; 
-    totalChunks = Math.ceil(fileSize / chunkSize);
-  } else if (event.data === "download") {
-    const blob = new Blob(chunks, { type: "application/octet-stream" });
-    const endTime = performance.now();
-    const elapsedTime = endTime - startTime;
+  const data = event.data;
 
-    self.postMessage({
-      blob: blob,
-      timeTaken: elapsedTime,
-    });
-
-    // Reset everything for the next file transfer
-    chunks = [];
-    currentChunk = 0;
-    prevProgress = 0; 
-    startTime = null;
-  } else {
-    if (!startTime) {
-      startTime = performance.now();
+  // 1. Initialize State
+  if (data.status === "fileInfo") {
+    totalExpectedChunks = data.totalChunks;
+    fileMimeType = data.fileType || fileMimeType;
+    chunks = new Array(totalExpectedChunks); // Pre-allocate array slots
+    receivedCount = 0;
+  } 
+  
+  // 2. Audit & Assemble
+  else if (data === "check_missing") {
+    if (receivedCount === totalExpectedChunks) {
+      // 100% Integrity Confirmed. Build the file.
+      const blob = new Blob(chunks, { type: fileMimeType });
+      self.postMessage({ blob: blob });
+      chunks = []; // Free memory
+    } else {
+      // Find holes in the array and NACK the sender
+      const missingIds = [];
+      for (let i = 0; i < totalExpectedChunks; i++) {
+        if (!chunks[i]) missingIds.push(i);
+      }
+      self.postMessage({ request_retries: true, missingIds });
     }
-
-    chunks.push(new Uint8Array(event.data));
-
-    currentChunk++;
-    const progress = (currentChunk / totalChunks) * 100;
-
-    // Cap at 100 and only send updates when the integer changes to save performance
-    const roundedProgress = Math.min(100, Math.floor(progress));
-    if (roundedProgress !== prevProgress) {
-      prevProgress = roundedProgress;
-      self.postMessage({
-        progress: prevProgress,
-      });
+  } 
+  
+  // 3. Unpack Binary Frames
+  else if (data.chunk) {
+    const payload = data.chunk as Uint8Array;
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    
+    // Read the Chunk ID from the first 4 bytes
+    const chunkId = view.getUint32(0, true);
+    
+    // Prevent double-counting if a chunk arrives twice during a retry storm
+    if (!chunks[chunkId]) {
+      // Slice out the 4-byte header to get the pure file data
+      chunks[chunkId] = payload.slice(4); 
+      receivedCount++;
+      
+      const progress = Math.floor((receivedCount / totalExpectedChunks) * 100);
+      self.postMessage({ progress });
     }
   }
 });
