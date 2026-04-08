@@ -19,7 +19,6 @@ const ShareLink = ({ userCode }: { userCode: string }) => {
   const { theme } = useTheme();
 
   const handleCopyClick = () => {
-    // UPDATED: Now points to the new Netlify domain
     navigator.clipboard.writeText(
       `https://directdashv2.vercel.app/transfer?code=${userCode}`
     );
@@ -48,7 +47,6 @@ const ShareLink = ({ userCode }: { userCode: string }) => {
           <div className="flex items-center justify-center space-x-2">
             <div className="flex flex-col w-full gap-y-2 justify-center items-center">
               <div className="flex justify-center border rounded-md w-fit p-2">
-                {/* UPDATED: QR Code value now points to Netlify */}
                 <QRCodeSVG
                   value={`https://directdashv2.vercel.app/transfer?code=${userCode}`}
                   size={128}
@@ -61,7 +59,6 @@ const ShareLink = ({ userCode }: { userCode: string }) => {
               <div className="flex w-full justify-center gap-x-1">
                 <Input
                   id="link"
-                  // UPDATED: Input field display value
                   defaultValue={`https://directdashv2.vercel.app/transfer?code=${userCode}`}
                   readOnly
                 />
