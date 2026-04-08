@@ -14,9 +14,11 @@ import FileUploadBtn from "./FileUploadBtn";
 import FileDownload from "./FileDownload";
 import ShareLink from "./ShareLink";
 import { useSearchParams } from "next/navigation";
+import { useMediaStream } from "../utils/mediaHelper"; // ✅ Custom Hook
 
 const ShareCard = () => {
   const userDetails = useSocket();
+  const media = useMediaStream(); // ✅ Media Layer
   const [partnerId, setpartnerId] = useState("");
   const [isLoading, setisLoading] = useState(false);
   const [isCopied, setisCopied] = useState(false);
@@ -34,72 +36,14 @@ const ShareCard = () => {
   const [fileNameState, setfileNameState] = useState<any>();
   const [fileSending, setfileSending] = useState(false);
   const [fileReceiving, setfileReceiving] = useState(false);
-  const [name, setname] = useState<any>();
   const searchParams = useSearchParams();
-
-  // --- MEDIA REFS & STATE ---
-  const localVideoRef = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [videoActive, setVideoActive] = useState(true);
-  const [audioActive, setAudioActive] = useState(true);
 
   const workerRef = useRef<Worker>();
   const isDisconnecting = useRef(false);
 
-  // Sync Stream with Local Video Ref
-  useEffect(() => {
-    if (stream && localVideoRef.current) {
-      localVideoRef.current.srcObject = stream;
-    }
-  }, [stream]);
-
-  const getMediaStream = async () => {
-    if (stream) return stream;
-    try {
-      const newStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setStream(newStream);
-      return newStream;
-    } catch (err) {
-      toast.error("Camera/Mic access is required for video calls");
-      return null;
-    }
-  };
-
-  const addUserToSocketDB = () => {
-    userDetails.socket.on("connect", () => {
-      setuserId(userDetails.userId);
-      userDetails.socket.emit("details", {
-        socketId: userDetails.socket.id,
-        uniqueId: userDetails.userId,
-      });
-    });
-  };
-
-  function CopyToClipboard(value: any) {
-    setisCopied(true);
-    toast.success("Copied");
-    navigator.clipboard.writeText(value);
-    setTimeout(() => { setisCopied(false); }, 3000);
-  }
-
-  const toggleVideo = () => {
-    if (stream) {
-      stream.getVideoTracks()[0].enabled = !videoActive;
-      setVideoActive(!videoActive);
-    }
-  };
-
-  const toggleAudio = () => {
-    if (stream) {
-      stream.getAudioTracks()[0].enabled = !audioActive;
-      setAudioActive(!audioActive);
-    }
-  };
-
-  // --- LOOP-GUARDED TERMINATION HANDLER ---
+  // --- TERMINATION HANDLER (Handshake Logic) ---
   const handleTerminate = (shouldSendSignal = true) => {
-    if (isDisconnecting.current) return; 
+    if (isDisconnecting.current) return;
     isDisconnecting.current = true;
 
     if (peerRef.current) {
@@ -107,7 +51,7 @@ const ShareCard = () => {
         try {
           peerRef.current.send(JSON.stringify({ type: "terminate" }));
         } catch (e) {
-          console.log("Peer already disconnected or data channel not open");
+          console.log("Peer already disconnected");
         }
       }
       peerRef.current.destroy();
@@ -115,9 +59,17 @@ const ShareCard = () => {
   };
 
   useEffect(() => {
-    getMediaStream(); 
+    media.getMediaStream(); // Pre-warm camera
     workerRef.current = new Worker(new URL("../utils/worker.ts", import.meta.url));
-    addUserToSocketDB();
+    
+    userDetails.socket.on("connect", () => {
+      setuserId(userDetails.userId);
+      userDetails.socket.emit("details", {
+        socketId: userDetails.socket.id,
+        uniqueId: userDetails.userId,
+      });
+    });
+
     if (searchParams.get("code")) setpartnerId(String(searchParams.get("code")));
 
     userDetails.socket.on("signaling", (data: any) => {
@@ -137,13 +89,13 @@ const ShareCard = () => {
 
     return () => {
       peerRef.current?.destroy();
-      stream?.getTracks().forEach(track => track.stop());
+      media.stopMediaStream();
       workerRef.current?.terminate();
     };
   }, []);
 
   const callUser = async () => {
-    const currentStream = await getMediaStream();
+    const currentStream = await media.getMediaStream();
     if (!currentStream) { setisLoading(false); return; }
 
     const peer = new Peer({
@@ -162,13 +114,11 @@ const ShareCard = () => {
       },
     });
     peerRef.current = peer;
-    isDisconnecting.current = false; 
+    isDisconnecting.current = false;
 
+    // ✅ Use Hook's safe attachment helper
     peer.on("stream", (remoteStream) => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
-        remoteVideoRef.current.play().catch(() => {});
-      }
+      media.attachRemoteStream(remoteStream);
     });
 
     peer.on("signal", (data) => {
@@ -178,7 +128,7 @@ const ShareCard = () => {
     peer.on("data", (data) => {
       const parsedData = JSON.parse(data);
       if (parsedData.type === "terminate") {
-        handleTerminate(false); // ✅ STOP THE PING-PONG HERE
+        handleTerminate(false); // ✅ Fix: Stop loop
         return;
       }
       if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
@@ -195,18 +145,19 @@ const ShareCard = () => {
       userDetails.setpeerState(peer);
     });
 
-    peer.on("close", () => { 
+    peer.on("close", () => {
       setpartnerId("");
-      setcurrentConnection(false); 
-      setterminateCall(false); 
+      setcurrentConnection(false);
+      setterminateCall(false);
       setisLoading(false);
-      userDetails.setpeerState(undefined); 
+      userDetails.setpeerState(undefined);
+      media.stopMediaStream(); // ✅ Reset UI & Hardware
       toast.error("Connection terminated");
     });
   };
 
   const acceptUser = async () => {
-    const currentStream = await getMediaStream();
+    const currentStream = await media.getMediaStream();
     if (!currentStream) return;
 
     const peer = new Peer({
@@ -230,10 +181,7 @@ const ShareCard = () => {
     userDetails.setpeerState(peer);
 
     peer.on("stream", (remoteStream) => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
-        remoteVideoRef.current.play().catch(() => {});
-      }
+      media.attachRemoteStream(remoteStream);
     });
 
     peer.on("signal", (data) => {
@@ -247,7 +195,7 @@ const ShareCard = () => {
     peer.on("data", (data) => {
       const parsedData = JSON.parse(data);
       if (parsedData.type === "terminate") {
-        handleTerminate(false); // ✅ STOP THE PING-PONG HERE
+        handleTerminate(false);
         return;
       }
       if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
@@ -256,13 +204,12 @@ const ShareCard = () => {
     });
 
     peer.signal(signalingData.signalData);
-    peer.on("close", () => { 
+    peer.on("close", () => {
       setpartnerId("");
-      setcurrentConnection(false); 
-      setterminateCall(false); 
-      setisLoading(false);
-      userDetails.setpeerState(undefined); 
-      toast.error("Connection terminated");
+      setcurrentConnection(false);
+      setterminateCall(false);
+      media.stopMediaStream();
+      userDetails.setpeerState(undefined);
     });
   };
 
@@ -280,7 +227,6 @@ const ShareCard = () => {
     if (data.info) {
       workerRef.current?.postMessage({ status: "fileInfo", fileSize: data.fileSize });
       setfileNameState(data.fileName);
-      setname(data.fileName);
     } else if (data.done) workerRef.current?.postMessage("download");
     else { setdownloadFile("active"); workerRef.current?.postMessage(data); }
   }
@@ -319,20 +265,20 @@ const ShareCard = () => {
   return (
     <Card className="w-full lg:w-[450px] backdrop-blur-xl bg-card/60 border-primary/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)] relative overflow-hidden transition-all duration-300">
       
-      {/* --- VIDEO UI --- */}
+      {/* --- VIDEO UI (Using Hook Refs) --- */}
       <div className="relative aspect-video bg-black/95 border-b border-primary/10 overflow-hidden group">
-        <video ref={remoteVideoRef} autoPlay playsInline controls={false} className="w-full h-full object-cover" />
+        <video ref={media.remoteVideoRef} autoPlay playsInline controls={false} className="w-full h-full object-cover" />
         
         <div className="absolute bottom-3 right-3 w-32 aspect-video bg-card rounded-lg overflow-hidden border border-primary/40 shadow-xl z-20">
-          <video ref={localVideoRef} autoPlay playsInline muted controls={false} className="w-full h-full object-cover scale-x-[-1]" />
+          <video ref={media.localVideoRef} autoPlay playsInline muted controls={false} className="w-full h-full object-cover scale-x-[-1]" />
         </div>
 
         <div className="absolute bottom-3 left-3 flex gap-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
-          <Button size="icon" variant="secondary" type="button" className="rounded-full h-9 w-9 bg-background/80" onClick={toggleVideo}>
-            {videoActive ? <Video size={16} /> : <VideoOff size={16} className="text-destructive" />}
+          <Button size="icon" variant="secondary" type="button" className="rounded-full h-9 w-9 bg-background/80" onClick={media.toggleVideo}>
+            {media.videoActive ? <Video size={16} /> : <VideoOff size={16} className="text-destructive" />}
           </Button>
-          <Button size="icon" variant="secondary" type="button" className="rounded-full h-9 w-9 bg-background/80" onClick={toggleAudio}>
-            {audioActive ? <Mic size={16} /> : <MicOff size={16} className="text-destructive" />}
+          <Button size="icon" variant="secondary" type="button" className="rounded-full h-9 w-9 bg-background/80" onClick={media.toggleAudio}>
+            {media.audioActive ? <Mic size={16} /> : <MicOff size={16} className="text-destructive" />}
           </Button>
         </div>
       </div>
@@ -346,8 +292,8 @@ const ShareCard = () => {
                 <div className="flex items-center border border-primary/20 rounded-lg px-4 h-11 w-full bg-primary/5 text-primary font-mono text-sm">
                   {userId || "Loading..."}
                 </div>
-                <Button variant="outline" type="button" className="h-11 w-11 p-0" onClick={() => CopyToClipboard(userDetails?.userId)} disabled={!userId}>
-                  {isCopied ? <Check size={18} className="text-green-500" /> : <CopyIcon size={18} />}
+                <Button variant="outline" type="button" className="h-11 w-11 p-0" onClick={() => {toast.success("Copied"); navigator.clipboard.writeText(userDetails?.userId);}}>
+                  <CopyIcon size={18} />
                 </Button>
                 <ShareLink userCode={userId} />
               </div>
