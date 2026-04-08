@@ -1,6 +1,7 @@
+"use client";
 import React from "react";
 import { Button } from "./ui/button";
-import { Upload } from "lucide-react";
+import { Send, X } from "lucide-react";
 import { Progress } from "./ui/progress";
 import { truncateString } from "@/utils/funtions";
 
@@ -18,26 +19,30 @@ const FileUpload = ({
   showProgress,
 }: fileUploadProps) => {
   return (
-    <div className="flex flex-col border rounded-lg  px-3 py-3 text-sm w-full gap-y-2">
+    <div className="flex flex-col border border-primary/20 bg-background rounded-lg px-3 py-3 text-sm w-full gap-y-2 transition-all shadow-sm">
       <div className="flex justify-between items-center">
-        <div className="flex">{truncateString(fileName)}</div>
+        <div className="flex font-medium">{truncateString(fileName)}</div>
         <div className="flex">
           <Button
             type="button"
-            variant="outline"
-            className="h-[30px] px-2"
+            variant={showProgress ? "destructive" : "default"}
+            className="h-[30px] px-3 transition-all"
             onClick={() => {
               handleClick();
             }}
           >
-            <Upload size={15} />
+            {showProgress ? (
+              <span className="flex items-center"><X size={14} className="mr-1" /> Cancel</span>
+            ) : (
+              <span className="flex items-center"><Send size={14} className="mr-1" /> Send</span>
+            )}
           </Button>
         </div>
       </div>
 
       {showProgress ? (
-        <div>
-          <Progress value={fileProgress} className="h-1" />
+        <div className="mt-1">
+          <Progress value={fileProgress} className="h-1.5" />
         </div>
       ) : null}
     </div>
