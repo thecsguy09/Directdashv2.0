@@ -1,4 +1,3 @@
-"use client";
 import React, { useEffect, useRef, useState } from "react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
@@ -20,7 +19,7 @@ const Chat = () => {
 
       // Send the message to the partner using the peer connection
       const peer = Socket.peerState;
-      if (peer && peer.connected) {
+      if (peer) {
         const messageData = {
           type: "messages",
           text: newMessage,
@@ -36,39 +35,24 @@ const Chat = () => {
     const peer = Socket.peerState;
 
     if (peer) {
-      const handleData = (data: any) => {
-        // ✅ PURE STRING CHECK: This completely ignores the high-speed binary file chunks.
-        // It will only attempt to parse data if it arrives as a native string.
-        if (typeof data === "string") {
-          try {
-            // Parse and display the incoming message
-            const parsedJSON = JSON.parse(data);
-            if (parsedJSON && parsedJSON.type === "messages" && parsedJSON.text) {
-              setMessages((prevMessages) => [...prevMessages, parsedJSON]);
-            }
-          } catch (e) {
-            // Quietly ignore any non-chat JSON strings
-          }
+      peer.on("data", (data: any) => {
+        // Parse and display the incoming message
+        const receivedMessage = JSON.parse(data);
+        if (receivedMessage.text) {
+          setMessages((prevMessages) => [...prevMessages, receivedMessage]);
         }
-      };
-
-      peer.on("data", handleData);
-      
-      return () => {
-        peer.off("data", handleData);
-      };
+      });
     }
   }, [Socket.peerState]);
 
-  // Global Keyboard Shortcuts
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        inputRef.current?.focus();
-      } 
-      // Note: We removed the global "Enter" listener here so it doesn't 
-      // misfire when you press Enter in the "Peer ID" input box!
+        inputRef.current.focus();
+      } else if (e.key === "Enter") {
+        btnRef.current.click();
+      }
     };
     document.addEventListener("keydown", down);
     return () => document.removeEventListener("keydown", down);
@@ -117,12 +101,8 @@ const Chat = () => {
                   type="text"
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    // ✅ FIXED: Only trigger Enter when actively typing in the chat box
-                    if (e.key === "Enter") handleSendMessage();
-                  }}
                   ref={inputRef}
-                  placeholder="Type a message (Cmd+K)"
+                  placeholder="Type a message..."
                   className="h-11 rounded-full bg-background border-primary/20 focus-visible:ring-primary/50 shadow-inner px-4 transition-all duration-300"
                 />
                 <Button
