@@ -4,6 +4,9 @@ import { Button } from "./ui/button";
 import { SendHorizonal } from "lucide-react";
 import { useSocket } from "@/context/SocketProvider";
 
+// GLOBAL DECODER: Prevent UI stutter during intense chat sessions
+const globalDecoder = new TextDecoder();
+
 const Chat = () => {
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState<any>("");
@@ -17,7 +20,6 @@ const Chat = () => {
       setMessages(newMessages);
       setNewMessage("");
 
-      // Send the message to the partner using the peer connection
       const peer = Socket.peerState;
       if (peer) {
         const messageData = {
@@ -25,21 +27,38 @@ const Chat = () => {
           text: newMessage,
           sender: "other",
         };
-        peer.send(JSON.stringify(messageData));
+        
+        const payload = new TextEncoder().encode(JSON.stringify(messageData));
+        const framedMessage = new Uint8Array(payload.byteLength + 1);
+        framedMessage[0] = 0; 
+        framedMessage.set(payload, 1); 
+        
+        peer.send(framedMessage); 
       }
     }
   };
 
-  // Set up event listeners for incoming messages
   useEffect(() => {
     const peer = Socket.peerState;
 
     if (peer) {
       peer.on("data", (data: any) => {
-        // Parse and display the incoming message
-        const receivedMessage = JSON.parse(data);
-        if (receivedMessage.text) {
-          setMessages((prevMessages) => [...prevMessages, receivedMessage]);
+        if (!data || data.byteLength === 0) return;
+
+        if (data[0] === 0) {
+          try {
+            const payload = data.subarray ? data.subarray(1) : data.slice(1);
+            
+            // REUSE GLOBAL DECODER
+            const textData = globalDecoder.decode(payload);
+            const receivedMessage = JSON.parse(textData);
+            
+            if (receivedMessage.text && receivedMessage.type === "messages") {
+              setMessages((prevMessages) => [...prevMessages, receivedMessage]);
+            }
+          } catch (error) {
+            console.error("Failed to parse chat message", error);
+          }
         }
       });
     }
@@ -64,7 +83,6 @@ const Chat = () => {
         <div className="flex w-full lg:w-[400px] animate-in fade-in slide-in-from-right-8 duration-500">
           <div className="flex flex-col border border-primary/20 rounded-xl bg-card/60 backdrop-blur-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] dark:shadow-[0_0_40px_rgba(59,130,246,0.1)] w-full h-[550px] overflow-hidden">
             
-            {/* Chat Header */}
             <div className="px-4 py-3 border-b border-primary/10 bg-primary/5 backdrop-blur-md">
               <h3 className="font-semibold text-sm flex items-center">
                 <span className="flex h-2 w-2 rounded-full bg-green-500 mr-2 animate-pulse"></span>
@@ -72,7 +90,6 @@ const Chat = () => {
               </h3>
             </div>
 
-            {/* Chat Messages */}
             <div className="flex-1 overflow-y-auto w-full p-4 space-y-3 custom-scrollbar">
               {messages.map((message, index) => (
                 <div
@@ -94,7 +111,6 @@ const Chat = () => {
               ))}
             </div>
 
-            {/* Chat Input Area */}
             <div className="p-3 bg-background/50 backdrop-blur-md border-t border-primary/10">
               <div className="flex items-center gap-2">
                 <Input

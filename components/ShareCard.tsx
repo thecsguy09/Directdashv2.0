@@ -18,14 +18,16 @@ import FileDownload from "./FileDownload";
 import ShareLink from "./ShareLink";
 import { useSearchParams } from "next/navigation";
 import { useMediaStream } from "../utils/mediaHelper"; 
-import { motion } from "framer-motion"; // ✅ Draggable Logic
+import { motion } from "framer-motion";
+
+// GLOBAL DECODER: Instantiated once to prevent GC blocking on the UI thread
+const globalDecoder = new TextDecoder();
 
 const ShareCard = () => {
   const userDetails = useSocket();
   const media = useMediaStream(); 
   const [partnerId, setpartnerId] = useState("");
   const [isLoading, setisLoading] = useState(false);
-  const [isCopied, setisCopied] = useState(false);
   const [currentConnection, setcurrentConnection] = useState(false);
   const peerRef = useRef<any>();
   const [userId, setuserId] = useState<any>();
@@ -45,9 +47,8 @@ const ShareCard = () => {
   const workerRef = useRef<Worker>();
   const isDisconnecting = useRef(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const constraintsRef = useRef(null); // ✅ For dynamic drag constraints
+  const constraintsRef = useRef(null);
 
-  // --- NAVIGATION PROTECTION ---
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (currentConnection) {
@@ -73,19 +74,20 @@ const ShareCard = () => {
     };
   }, [currentConnection]);
 
-  // --- TERMINATION HANDLER (Handshake Logic) ---
   const handleTerminate = (shouldSendSignal = true) => {
     if (isDisconnecting.current) return;
     isDisconnecting.current = true;
 
-    if (peerRef.current) {
-      if (shouldSendSignal && peerRef.current?.connected) {
-        try {
-          peerRef.current.send(JSON.stringify({ type: "terminate" }));
-        } catch (e) { console.log(e); }
-      }
-      peerRef.current.destroy();
+    if (peerRef.current && shouldSendSignal && peerRef.current?.connected) {
+      try {
+        const payload = new TextEncoder().encode(JSON.stringify({ type: "terminate" }));
+        const framedMeta = new Uint8Array(payload.byteLength + 1);
+        framedMeta[0] = 1; 
+        framedMeta.set(payload, 1);
+        peerRef.current.send(framedMeta); 
+      } catch (e) { console.log(e); }
     }
+    if (peerRef.current) peerRef.current.destroy();
   };
 
   useEffect(() => {
@@ -124,6 +126,27 @@ const ShareCard = () => {
     };
   }, []);
 
+  const handleDataRouting = (data: any) => {
+    if (!data || data.byteLength === 0) return;
+
+    const type = data[0]; 
+    const payload = data.subarray ? data.subarray(1) : data.slice(1); 
+
+    if (type === 1) {
+      // REUSE GLOBAL DECODER
+      const textData = globalDecoder.decode(payload);
+      const parsedData = JSON.parse(textData);
+      
+      if (parsedData.type === "terminate") { handleTerminate(false); return; }
+      if (parsedData.info) { handleReceivingData(parsedData); return; }
+      if (parsedData.done) { handleReceivingData(parsedData); toast.success("File received"); return; }
+    } 
+    else if (type === 2) {
+      setfileReceiving(true);
+      handleReceivingData(payload); 
+    }
+  };
+
   const callUser = async () => {
     const currentStream = await media.getMediaStream();
     if (!currentStream) { setisLoading(false); return; }
@@ -145,19 +168,9 @@ const ShareCard = () => {
     peerRef.current = peer;
     isDisconnecting.current = false;
 
-    peer.on("stream", (remoteStream) => { media.attachRemoteStream(remoteStream); });
-
-    peer.on("signal", (data) => {
-      userDetails.socket.emit("send-signal", { from: userDetails.userId, signalData: data, to: partnerId });
-    });
-
-    peer.on("data", (data) => {
-      const parsedData = JSON.parse(data);
-      if (parsedData.type === "terminate") { handleTerminate(false); return; }
-      if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
-      else if (parsedData.done) { handleReceivingData(parsedData); toast.success("File received"); }
-      else if (parsedData.info) handleReceivingData(parsedData);
-    });
+    peer.on("stream", (remoteStream) => media.attachRemoteStream(remoteStream));
+    peer.on("signal", (data) => userDetails.socket.emit("send-signal", { from: userDetails.userId, signalData: data, to: partnerId }));
+    peer.on("data", handleDataRouting);
 
     userDetails.socket.off("callAccepted"); 
     userDetails.socket.on("callAccepted", (data: any) => {
@@ -191,8 +204,8 @@ const ShareCard = () => {
     isDisconnecting.current = false;
     userDetails.setpeerState(peer);
 
-    peer.on("stream", (remoteStream) => { media.attachRemoteStream(remoteStream); });
-
+    peer.on("stream", (remoteStream) => media.attachRemoteStream(remoteStream));
+    
     peer.on("signal", (data) => {
       userDetails.socket.emit("accept-signal", { signalData: data, to: partnerId });
       setcurrentConnection(true);
@@ -201,13 +214,7 @@ const ShareCard = () => {
       toast.success(`Connected to ${partnerId}`);
     });
 
-    peer.on("data", (data) => {
-      const parsedData = JSON.parse(data);
-      if (parsedData.type === "terminate") { handleTerminate(false); return; }
-      if (parsedData.chunk) { setfileReceiving(true); handleReceivingData(parsedData.chunk); }
-      else if (parsedData.done) { handleReceivingData(parsedData); toast.success("File received"); }
-      else if (parsedData.info) handleReceivingData(parsedData);
-    });
+    peer.on("data", handleDataRouting);
 
     peer.signal(signalingData.signalData);
     peer.on("close", () => {
@@ -238,57 +245,89 @@ const ShareCard = () => {
 
   function handleReceivingData(data: any) {
     if (data.info) {
-      workerRef.current?.postMessage({ status: "fileInfo", fileSize: data.fileSize });
+      workerRef.current?.postMessage({ status: "fileInfo", fileSize: data.fileSize, chunkSize: data.chunkSize });
       setfileNameState(data.fileName);
     } else if (data.done) workerRef.current?.postMessage("download");
-    else { setdownloadFile("active"); workerRef.current?.postMessage(data); }
+    else { setdownloadFile("active"); workerRef.current?.postMessage(data); } 
   }
 
   const handleWebRTCUpload = () => {
     const peer = peerRef.current;
     const file = fileUpload[0];
-    const chunkSize = 16 * 1024;
+    const chunkSize = 64 * 1024; 
     let offset = 0;
+
+    const sendSystemJSON = (obj: any) => {
+      const payload = new TextEncoder().encode(JSON.stringify(obj));
+      const framedMeta = new Uint8Array(payload.byteLength + 1);
+      framedMeta[0] = 1; 
+      framedMeta.set(payload, 1);
+      peer.send(framedMeta); 
+    };
+
+    sendSystemJSON({ 
+      info: true, 
+      fileName: file.name, 
+      fileSize: file.size, 
+      fileType: file.type,
+      chunkSize: chunkSize 
+    });
+    
+    setfileSending(true);
+
     const readAndSendChunk = () => {
       const chunk = file.slice(offset, offset + chunkSize);
       const reader = new FileReader();
-      if (offset === 0) {
-        setfileSending(true);
-        peer.write(JSON.stringify({ info: true, fileName: file.name, fileSize: file.size, fileType: file.type }));
-      }
+
       reader.onload = (event) => {
         if (event.target?.result) {
-          const uint8ArrayChunk = new Uint8Array(event.target.result as ArrayBuffer);
-          peer.write(JSON.stringify({ chunk: Array.from(uint8ArrayChunk), progress: (offset / file.size) * 100 }));
-          setfileUploadProgress((offset / file.size) * 100);
+          const chunkBytes = new Uint8Array(event.target.result as ArrayBuffer);
+          
+          const framedChunk = new Uint8Array(chunkBytes.byteLength + 1);
+          framedChunk[0] = 2; 
+          framedChunk.set(chunkBytes, 1);
+          
+          peer.send(framedChunk); 
+          
           offset += chunkSize;
-          if (offset < file.size) readAndSendChunk();
-          else {
-            peer.write(JSON.stringify({ done: true, fileName: file.name, fileSize: file.size, fileType: file.type }));
-            setfileUploadProgress(100); setfileSending(false); toast.success("File sent");
+          setfileUploadProgress((offset / file.size) * 100);
+
+          if (offset < file.size) {
+            const checkBuffer = () => {
+              if (peer._channel && peer._channel.bufferedAmount > 1024 * 1024) {
+                setTimeout(checkBuffer, 10); 
+              } else {
+                readAndSendChunk(); 
+              }
+            };
+            checkBuffer();
+          } else {
+            sendSystemJSON({ done: true, fileName: file.name, fileSize: file.size, fileType: file.type });
+            setfileUploadProgress(100); 
+            setfileSending(false); 
+            toast.success("File sent");
           }
         }
       };
       reader.readAsArrayBuffer(chunk);
     };
+    
     readAndSendChunk();
   };
 
   return (
     <Card className="w-full lg:w-[450px] backdrop-blur-xl bg-card/60 border-primary/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)] relative overflow-hidden transition-all duration-300">
       
-      {/* --- DRAGGABLE VIDEO UI --- */}
       <div ref={constraintsRef} className="relative aspect-video bg-black/95 border-b border-primary/10 overflow-hidden group">
         <video ref={media.remoteVideoRef} autoPlay playsInline controls={false} className="w-full h-full object-cover" />
         
-        {/* Local Draggable PIP with persistent layout */}
         <motion.div 
           drag
           dragConstraints={constraintsRef}
           dragElastic={0.1}
           dragMomentum={false}
           whileDrag={{ scale: 1.05, zIndex: 50 }}
-          layout // ✅ Prevents position resetting during state changes
+          layout
           className="absolute bottom-3 right-3 w-32 aspect-video bg-card rounded-lg overflow-hidden border border-primary/40 shadow-xl z-20 cursor-grab active:cursor-grabbing touch-none"
         >
           <video 
